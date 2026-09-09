@@ -1,7 +1,27 @@
+import urllib.parse
 import streamlit as st
 import db
 
 st.set_page_config(page_title="Tontine App", page_icon="💰", layout="centered")
+
+
+def format_phone_international(telephone: str) -> str:
+    """Convertit un numéro local (ex: 0102939380) en format international
+    sans le '+' pour les liens wa.me. Suppose la Côte d'Ivoire (225) si le
+    numéro commence par 0."""
+    digits = "".join(ch for ch in telephone if ch.isdigit())
+    if digits.startswith("0"):
+        return "225" + digits[1:]
+    return digits
+
+
+def whatsapp_reminder_url(telephone: str, nom: str, tontine_nom: str, montant: float, cycle: int) -> str:
+    phone = format_phone_international(telephone)
+    message = (
+        f"Bonjour {nom}, petit rappel pour votre cotisation de {montant:.0f} FCFA "
+        f"pour la tontine « {tontine_nom} » (cycle {cycle}). Merci de cotiser dès que possible 🙏"
+    )
+    return f"https://wa.me/{phone}?text={urllib.parse.quote(message)}"
 
 if "user" not in st.session_state:
     st.session_state.user = None
@@ -157,12 +177,17 @@ def page_tontine():
         cot = cotisations.get(m["user_id"])
         statut = cot["statut"] if cot else "en_attente"
         emoji = {"en_attente": "⚪", "declaree": "🟠", "validee": "🟢"}[statut]
+        label = {
+            "en_attente": ":red[**En retard**]",
+            "declaree": ":orange[En attente de validation]",
+            "validee": ":green[**Payé ✓**]",
+        }[statut]
 
         c1, c2, c3 = st.columns([3, 2, 2])
         with c1:
             st.write(f"{emoji} {m['nom']}")
         with c2:
-            st.caption(statut.replace("_", " "))
+            st.markdown(label)
         with c3:
             if m["user_id"] == user["id"] and statut == "en_attente":
                 if st.button("Déclarer mon paiement", key=f"declare_{m['id']}"):
@@ -174,6 +199,12 @@ def page_tontine():
                 if st.button("Valider", key=f"validate_{m['id']}"):
                     db.valider_cotisation(cot["id"])
                     st.rerun()
+            elif is_admin and statut == "en_attente" and m.get("telephone"):
+                url = whatsapp_reminder_url(
+                    m["telephone"], m["nom"], tontine["nom"],
+                    tontine["montant_cotisation"], cycle,
+                )
+                st.link_button("📲 Rappel WhatsApp", url, key=f"remind_{m['id']}")
 
     # --- Passage au tour suivant (admin) ---
     if is_admin and tontine["statut"] == "active":
