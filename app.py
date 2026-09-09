@@ -1,0 +1,205 @@
+import streamlit as st
+import db
+
+st.set_page_config(page_title="Tontine App", page_icon="💰", layout="centered")
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+if "tontine_id" not in st.session_state:
+    st.session_state.tontine_id = None
+
+
+# ---------------------------------------------------------------------------
+# AUTH
+# ---------------------------------------------------------------------------
+
+def page_auth():
+    st.title("💰 Tontine App")
+    st.caption("Gérez vos tontines simplement, sans carnet ni confusion.")
+
+    tab_login, tab_signup = st.tabs(["Connexion", "Inscription"])
+
+    with tab_login:
+        with st.form("login_form"):
+            tel = st.text_input("Téléphone")
+            pwd = st.text_input("Mot de passe", type="password")
+            submitted = st.form_submit_button("Se connecter", use_container_width=True)
+            if submitted:
+                user = db.authenticate(tel, pwd)
+                if user:
+                    st.session_state.user = user
+                    st.rerun()
+                else:
+                    st.error("Téléphone ou mot de passe incorrect.")
+
+    with tab_signup:
+        with st.form("signup_form"):
+            nom = st.text_input("Nom complet")
+            tel = st.text_input("Téléphone", key="signup_tel")
+            pwd = st.text_input("Mot de passe", type="password", key="signup_pwd")
+            submitted = st.form_submit_button("Créer mon compte", use_container_width=True)
+            if submitted:
+                if not nom or not tel or not pwd:
+                    st.warning("Merci de remplir tous les champs.")
+                else:
+                    ok, msg = db.create_user(nom, tel, pwd)
+                    if ok:
+                        st.success(msg + " Connectez-vous maintenant.")
+                    else:
+                        st.error(msg)
+
+
+# ---------------------------------------------------------------------------
+# DASHBOARD — liste des tontines
+# ---------------------------------------------------------------------------
+
+def page_dashboard():
+    user = st.session_state.user
+    st.title(f"👋 Bonjour, {user['nom']}")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        with st.expander("➕ Créer une tontine"):
+            with st.form("create_tontine_form"):
+                nom = st.text_input("Nom de la tontine")
+                montant = st.number_input("Montant de cotisation (FCFA)", min_value=500, step=500)
+                freq = st.selectbox("Fréquence", ["hebdomadaire", "mensuelle"])
+                submitted = st.form_submit_button("Créer")
+                if submitted and nom:
+                    tontine_id, code = db.create_tontine(nom, montant, freq, user["id"])
+                    st.success(f"Tontine créée ! Code d'invitation : **{code}**")
+
+    with col2:
+        with st.expander("🔑 Rejoindre une tontine"):
+            with st.form("join_tontine_form"):
+                code = st.text_input("Code d'invitation")
+                submitted = st.form_submit_button("Rejoindre")
+                if submitted and code:
+                    ok, msg = db.join_tontine(code.strip().upper(), user["id"])
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+    st.divider()
+    st.subheader("Mes tontines")
+
+    tontines = db.get_user_tontines(user["id"])
+    if not tontines:
+        st.info("Vous ne faites partie d'aucune tontine pour le moment.")
+        return
+
+    for t in tontines:
+        statut_emoji = {"en_attente": "🟡", "active": "🟢", "terminee": "✅"}.get(t["statut"], "")
+        with st.container(border=True):
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.markdown(f"**{t['nom']}** {statut_emoji}")
+                st.caption(
+                    f"{t['montant_cotisation']:.0f} FCFA · {t['frequence']} · "
+                    f"code `{t['code_invitation']}` · statut : {t['statut']}"
+                )
+            with c2:
+                if st.button("Ouvrir", key=f"open_{t['id']}", use_container_width=True):
+                    st.session_state.tontine_id = t["id"]
+                    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# DETAIL D'UNE TONTINE
+# ---------------------------------------------------------------------------
+
+def page_tontine():
+    user = st.session_state.user
+    tontine = db.get_tontine(st.session_state.tontine_id)
+
+    if st.button("← Retour à mes tontines"):
+        st.session_state.tontine_id = None
+        st.rerun()
+
+    st.title(f"💰 {tontine['nom']}")
+    is_admin = tontine["admin_id"] == user["id"]
+
+    membres = db.get_membres(tontine["id"])
+
+    st.caption(
+        f"{tontine['montant_cotisation']:.0f} FCFA · {tontine['frequence']} · "
+        f"{len(membres)} membre(s) · code `{tontine['code_invitation']}`"
+    )
+
+    # --- Activation par l'admin ---
+    if tontine["statut"] == "en_attente":
+        st.warning("Cette tontine n'a pas encore démarré.")
+        if is_admin:
+            st.write("Membres inscrits :")
+            for m in membres:
+                st.write(f"- {m['nom']} (tour n°{m['ordre_tour']})")
+            if st.button("🚀 Démarrer la tontine", type="primary"):
+                db.activer_tontine(tontine["id"])
+                st.rerun()
+        return
+
+    if tontine["statut"] == "terminee":
+        st.success("Cette tontine est terminée. Tous les membres ont reçu leur tour !")
+
+    cycle = tontine["cycle_actuel"]
+    beneficiaire = next((m for m in membres if m["ordre_tour"] == cycle), None)
+
+    if beneficiaire:
+        st.info(f"📅 Cycle {cycle} — Bénéficiaire de ce tour : **{beneficiaire['nom']}**")
+
+    # --- Cotisations du cycle ---
+    st.subheader(f"Cotisations — cycle {cycle}")
+    cotisations = {c["user_id"]: c for c in db.get_cotisations_cycle(tontine["id"], cycle)}
+
+    for m in membres:
+        cot = cotisations.get(m["user_id"])
+        statut = cot["statut"] if cot else "en_attente"
+        emoji = {"en_attente": "⚪", "declaree": "🟠", "validee": "🟢"}[statut]
+
+        c1, c2, c3 = st.columns([3, 2, 2])
+        with c1:
+            st.write(f"{emoji} {m['nom']}")
+        with c2:
+            st.caption(statut.replace("_", " "))
+        with c3:
+            if m["user_id"] == user["id"] and statut == "en_attente":
+                if st.button("Déclarer mon paiement", key=f"declare_{m['id']}"):
+                    db.declarer_cotisation(
+                        tontine["id"], user["id"], cycle, tontine["montant_cotisation"]
+                    )
+                    st.rerun()
+            elif is_admin and statut == "declaree":
+                if st.button("Valider", key=f"validate_{m['id']}"):
+                    db.valider_cotisation(cot["id"])
+                    st.rerun()
+
+    # --- Passage au tour suivant (admin) ---
+    if is_admin and tontine["statut"] == "active":
+        st.divider()
+        nb_validees = sum(1 for c in cotisations.values() if c["statut"] == "validee")
+        st.caption(f"{nb_validees}/{len(membres)} cotisations validées pour ce cycle.")
+        if st.button("➡️ Clôturer ce cycle et passer au suivant", type="primary"):
+            db.avancer_cycle(tontine["id"])
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# ROUTING
+# ---------------------------------------------------------------------------
+
+if st.session_state.user is None:
+    page_auth()
+else:
+    with st.sidebar:
+        st.write(f"Connecté : **{st.session_state.user['nom']}**")
+        if st.button("Déconnexion"):
+            st.session_state.user = None
+            st.session_state.tontine_id = None
+            st.rerun()
+
+    if st.session_state.tontine_id is None:
+        page_dashboard()
+    else:
+        page_tontine()
