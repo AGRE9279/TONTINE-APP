@@ -67,11 +67,9 @@ def create_tontine(nom, montant_cotisation, frequence, admin_id):
     }).execute()
     tontine_id = res.data[0]["id"]
 
-    sb.table("membres").insert({
-        "tontine_id": tontine_id,
-        "user_id": admin_id,
-        "ordre_tour": 1,
-    }).execute()
+    # L'admin gère la tontine mais n'est plus ajouté automatiquement comme
+    # adhérent — s'il veut aussi cotiser et recevoir un tour, il rejoint
+    # avec le code comme n'importe qui d'autre.
 
     return tontine_id, code
 
@@ -108,17 +106,29 @@ def join_tontine(code, user_id):
 def get_user_tontines(user_id):
     sb = get_client()
     membres = sb.table("membres").select("tontine_id").eq("user_id", user_id).execute()
-    tontine_ids = [m["tontine_id"] for m in membres.data]
+    tontine_ids = set(m["tontine_id"] for m in membres.data)
+
+    # Inclure aussi les tontines que l'utilisateur administre, même s'il
+    # n'en est pas adhérent.
+    admin_res = sb.table("tontines").select("id").eq("admin_id", user_id).execute()
+    tontine_ids.update(t["id"] for t in admin_res.data)
+
     if not tontine_ids:
         return []
     res = (
         sb.table("tontines")
         .select("*")
-        .in_("id", tontine_ids)
+        .in_("id", list(tontine_ids))
         .order("created_at", desc=True)
         .execute()
     )
     return res.data
+
+
+def get_user(user_id):
+    sb = get_client()
+    res = sb.table("users").select("id, nom, telephone").eq("id", user_id).execute()
+    return res.data[0] if res.data else None
 
 
 def get_tontine(tontine_id):
