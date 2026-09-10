@@ -30,8 +30,37 @@ def create_user(nom, telephone, password):
         "nom": nom,
         "telephone": telephone,
         "password_hash": hash_password(password),
+        "role": "user",
     }).execute()
     return True, "Compte créé avec succès."
+
+
+def create_admin_account(nom, telephone, password):
+    """Réservé au super_admin : crée directement un compte avec le rôle
+    'admin', sans passer par l'auto-inscription publique."""
+    sb = get_client()
+    existing = sb.table("users").select("id").eq("telephone", telephone).execute()
+    if existing.data:
+        return False, "Ce numéro de téléphone est déjà utilisé."
+
+    sb.table("users").insert({
+        "nom": nom,
+        "telephone": telephone,
+        "password_hash": hash_password(password),
+        "role": "admin",
+    }).execute()
+    return True, "Compte admin créé avec succès."
+
+
+def get_all_users():
+    sb = get_client()
+    res = (
+        sb.table("users")
+        .select("id, nom, telephone, role, created_at")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return res.data
 
 
 def authenticate(telephone, password):
