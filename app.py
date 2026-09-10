@@ -1,4 +1,6 @@
 import urllib.parse
+from datetime import datetime
+
 import streamlit as st
 import db
 
@@ -13,6 +15,18 @@ def format_phone_international(telephone: str) -> str:
     if digits.startswith("0"):
         return "225" + digits[1:]
     return digits
+
+
+def format_datetime_fr(iso_str: str) -> str:
+    """Convertit une date ISO (ex: 2026-09-10T14:23:05.123456) en format
+    lisible français : '10/09/2026 à 14:23'."""
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime("%d/%m/%Y à %H:%M")
+    except (ValueError, TypeError):
+        return iso_str
 
 
 def whatsapp_reminder_url(telephone: str, nom: str, tontine_nom: str, montant: float, cycle: int) -> str:
@@ -200,11 +214,21 @@ def page_tontine():
             "validee": ":green[**Payé ✓**]",
         }[statut]
 
+        date_declaration = format_datetime_fr(cot.get("date_declaration")) if cot else ""
+        date_validation = format_datetime_fr(cot.get("date_validation")) if cot else ""
+
         c1, c2, c3 = st.columns([3, 2, 2])
         with c1:
             st.write(f"{emoji} {m['nom']}")
         with c2:
             st.markdown(label)
+            if statut == "declaree" and date_declaration:
+                st.caption(f"Déclaré le {date_declaration}")
+            elif statut == "validee":
+                if date_validation:
+                    st.caption(f"Validé le {date_validation}")
+                if date_declaration:
+                    st.caption(f"(déclaré le {date_declaration})")
         with c3:
             if m["user_id"] == user["id"] and statut == "en_attente":
                 if st.button("Déclarer mon paiement", key=f"declare_{m['id']}"):
