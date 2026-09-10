@@ -63,6 +63,17 @@ def get_all_users():
     return res.data
 
 
+def get_all_tontines():
+    sb = get_client()
+    res = sb.table("tontines").select("*, users(nom)").order("created_at", desc=True).execute()
+    tontines = []
+    for t in res.data:
+        t2 = dict(t)
+        t2["admin_nom"] = t["users"]["nom"] if t.get("users") else "—"
+        tontines.append(t2)
+    return tontines
+
+
 def authenticate(telephone, password):
     sb = get_client()
     res = (
@@ -258,3 +269,49 @@ def avancer_cycle(tontine_id):
 
     if cycle >= nb_membres:
         sb.table("tontines").update({"statut": "terminee"}).eq("id", tontine_id).execute()
+
+
+# ---------- Administration (super_admin) ----------
+
+def reset_tontine(tontine_id):
+    """Remet une tontine à zéro : supprime toutes ses cotisations, remet
+    le cycle à 1, le statut à 'en_attente', et 'a_recu_tour' à False pour
+    tous les membres. Les membres eux-mêmes restent inscrits."""
+    sb = get_client()
+    sb.table("cotisations").delete().eq("tontine_id", tontine_id).execute()
+    sb.table("membres").update({"a_recu_tour": False}).eq("tontine_id", tontine_id).execute()
+    sb.table("tontines").update({
+        "cycle_actuel": 1,
+        "statut": "en_attente",
+    }).eq("id", tontine_id).execute()
+
+
+def wipe_all_data():
+    """Efface TOUTES les tontines, membres et cotisations (garde les
+    comptes utilisateurs). Irréversible."""
+    sb = get_client()
+    sb.table("cotisations").delete().neq("id", 0).execute()
+    sb.table("membres").delete().neq("id", 0).execute()
+    sb.table("tontines").delete().neq("id", 0).execute()
+
+
+def delete_admin_account(user_id):
+    """Supprime un compte admin ainsi que toutes les tontines qu'il
+    administre (et leurs membres/cotisations), plus ses propres
+    participations dans d'autres tontines."""
+    sb = get_client()
+
+    # Tontines administrées par ce compte : supprimer en cascade
+    admin_tontines = sb.table("tontines").select("id").eq("admin_id", user_id).execute()
+    tontine_ids = [t["id"] for t in admin_tontines.data]
+    if tontine_ids:
+        sb.table("cotisations").delete().in_("tontine_id", tontine_ids).execute()
+        sb.table("membres").delete().in_("tontine_id", tontine_ids).execute()
+        sb.table("tontines").delete().in_("id", tontine_ids).execute()
+
+    # Ses propres participations ailleurs (en tant qu'adhérent)
+    sb.table("cotisations").delete().eq("user_id", user_id).execute()
+    sb.table("membres").delete().eq("user_id", user_id).execute()
+
+    # Le compte lui-même
+    sb.table("users").delete().eq("id", user_id).execute()
