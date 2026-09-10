@@ -269,15 +269,21 @@ def page_admin_panel():
         with c1:
             st.write(f"- **{u['nom']}** ({u['telephone']}) — {role_badge}")
         with c2:
-            if u["role"] == "admin":
-                if st.button("🗑️ Supprimer", key=f"del_admin_{u['id']}"):
+            if u["role"] in ("admin", "user"):
+                if st.button("🗑️ Supprimer", key=f"del_{u['id']}"):
                     st.session_state[f"confirm_del_{u['id']}"] = True
                 if st.session_state.get(f"confirm_del_{u['id']}"):
-                    st.warning(f"Supprimer {u['nom']} et toutes ses tontines/cotisations ?")
+                    if u["role"] == "admin":
+                        st.warning(f"Supprimer {u['nom']} et toutes ses tontines/cotisations ?")
+                    else:
+                        st.warning(f"Supprimer {u['nom']} et ses participations aux tontines ?")
                     cc1, cc2 = st.columns(2)
                     with cc1:
                         if st.button("Oui, supprimer", key=f"confirm_yes_{u['id']}", type="primary"):
-                            db.delete_admin_account(u["id"])
+                            if u["role"] == "admin":
+                                db.delete_admin_account(u["id"])
+                            else:
+                                db.delete_user_account(u["id"])
                             st.session_state[f"confirm_del_{u['id']}"] = False
                             st.success(f"Compte {u['nom']} supprimé.")
                             st.rerun()
