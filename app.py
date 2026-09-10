@@ -262,7 +262,52 @@ def page_admin_panel():
     users = db.get_all_users()
     for u in users:
         role_badge = {"super_admin": "🛡️ Super admin", "admin": "👑 Admin", "user": "🙋 Utilisateur"}.get(u["role"], u["role"])
-        st.write(f"- **{u['nom']}** ({u['telephone']}) — {role_badge}")
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.write(f"- **{u['nom']}** ({u['telephone']}) — {role_badge}")
+        with c2:
+            if u["role"] == "admin":
+                if st.button("🗑️ Supprimer", key=f"del_admin_{u['id']}"):
+                    st.session_state[f"confirm_del_{u['id']}"] = True
+                if st.session_state.get(f"confirm_del_{u['id']}"):
+                    st.warning(f"Supprimer {u['nom']} et toutes ses tontines/cotisations ?")
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        if st.button("Oui, supprimer", key=f"confirm_yes_{u['id']}", type="primary"):
+                            db.delete_admin_account(u["id"])
+                            st.session_state[f"confirm_del_{u['id']}"] = False
+                            st.success(f"Compte {u['nom']} supprimé.")
+                            st.rerun()
+                    with cc2:
+                        if st.button("Annuler", key=f"confirm_no_{u['id']}"):
+                            st.session_state[f"confirm_del_{u['id']}"] = False
+                            st.rerun()
+
+    st.divider()
+    st.subheader("Réinitialiser une tontine")
+    st.caption("Efface les cotisations et remet le cycle à 1, pour retester une tontine sans la recréer.")
+    tontines = db.get_all_tontines()
+    if not tontines:
+        st.caption("Aucune tontine pour l'instant.")
+    for t in tontines:
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.write(f"- **{t['nom']}** (admin : {t['admin_nom']}) — statut : {t['statut']}, cycle {t['cycle_actuel']}")
+        with c2:
+            if st.button("🔄 Réinitialiser", key=f"reset_{t['id']}"):
+                db.reset_tontine(t["id"])
+                st.success(f"Tontine « {t['nom']} » réinitialisée.")
+                st.rerun()
+
+    st.divider()
+    st.subheader("⚠️ Zone dangereuse")
+    with st.expander("Tout effacer (toutes les tontines, membres et cotisations)"):
+        st.error("Action irréversible. Les comptes utilisateurs sont conservés, mais toutes les tontines et cotisations seront définitivement supprimées.")
+        confirm_text = st.text_input("Tape EFFACER pour confirmer")
+        if st.button("Tout effacer définitivement", disabled=(confirm_text != "EFFACER")):
+            db.wipe_all_data()
+            st.success("Toutes les données de tontines ont été effacées.")
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
