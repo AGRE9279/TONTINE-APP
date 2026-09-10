@@ -82,12 +82,19 @@ def page_auth():
             nom = st.text_input("Nom complet")
             tel = st.text_input("Téléphone", key="signup_tel")
             pwd = st.text_input("Mot de passe", type="password", key="signup_pwd")
+            type_compte = st.radio(
+                "Type de compte",
+                ["tontine", "cotisation"],
+                format_func=lambda v: "💰 Tontine" if v == "tontine" else "🤝 Cotisation (association)",
+                key="signup_type",
+            )
+            st.caption("Ce choix détermine ce que tu verras dans l'appli — tu ne pourras pas voir les tontines si tu choisis Cotisation, et inversement.")
             submitted = st.form_submit_button("Créer mon compte", use_container_width=True)
             if submitted:
                 if not nom or not tel or not pwd:
                     st.warning("Merci de remplir tous les champs.")
                 else:
-                    ok, msg = db.create_user(nom, tel, pwd)
+                    ok, msg = db.create_user(nom, tel, pwd, type_compte)
                     if ok:
                         st.success(msg + " Connectez-vous maintenant.")
                     else:
@@ -102,13 +109,21 @@ def page_dashboard():
     user = st.session_state.user
     st.title(f"👋 Bonjour, {user['nom']}")
 
-    tab_tontines, tab_associations = st.tabs(["💰 Tontines", "🤝 Associations"])
+    type_compte = user.get("type_compte")
 
-    with tab_tontines:
+    if type_compte == "tontine":
         page_dashboard_tontines(user)
-
-    with tab_associations:
+    elif type_compte == "cotisation":
         page_dashboard_associations(user)
+    else:
+        # Compte existant sans type défini : accès aux deux, en attendant
+        # qu'un super_admin lui assigne un type dans le panneau d'administration.
+        st.info("Ton type de compte n'est pas encore défini — tu vois les deux sections pour l'instant.")
+        tab_tontines, tab_associations = st.tabs(["💰 Tontines", "🤝 Associations"])
+        with tab_tontines:
+            page_dashboard_tontines(user)
+        with tab_associations:
+            page_dashboard_associations(user)
 
 
 def page_dashboard_tontines(user):
@@ -445,25 +460,57 @@ def page_admin_panel():
         nom = st.text_input("Nom complet de l'admin")
         tel = st.text_input("Téléphone")
         pwd = st.text_input("Mot de passe à lui communiquer", type="password")
+        type_compte = st.radio(
+            "Type de compte",
+            ["tontine", "cotisation"],
+            format_func=lambda v: "💰 Tontine" if v == "tontine" else "🤝 Cotisation (association)",
+            key="admin_type",
+        )
         submitted = st.form_submit_button("Créer le compte admin")
         if submitted:
             if not nom or not tel or not pwd:
                 st.warning("Merci de remplir tous les champs.")
             else:
-                ok, msg = db.create_admin_account(nom, tel, pwd)
+                ok, msg = db.create_admin_account(nom, tel, pwd, type_compte)
                 if ok:
                     st.success(msg + " Communique-lui son téléphone et son mot de passe.")
                 else:
                     st.error(msg)
 
     st.divider()
-    st.subheader("Comptes existants")
+    st.subheader("Comptes sans type défini")
+    st.caption("Comptes créés avant l'ajout du système Tontine/Cotisation — assigne un type à chacun.")
     users = db.get_all_users()
+    users_sans_type = [u for u in users if not u.get("type_compte")]
+    if not users_sans_type:
+        st.caption("Tous les comptes ont déjà un type défini.")
+    for u in users_sans_type:
+        c1, c2, c3 = st.columns([3, 2, 1])
+        with c1:
+            st.write(f"**{u['nom']}** ({u['telephone']})")
+        with c2:
+            choix = st.radio(
+                "Type",
+                ["tontine", "cotisation"],
+                format_func=lambda v: "💰 Tontine" if v == "tontine" else "🤝 Cotisation",
+                key=f"type_choice_{u['id']}",
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+        with c3:
+            if st.button("Enregistrer", key=f"save_type_{u['id']}"):
+                db.set_type_compte(u["id"], choix)
+                st.success(f"Type assigné à {u['nom']}.")
+                st.rerun()
+
+    st.divider()
+    st.subheader("Comptes existants")
     for u in users:
         role_badge = {"super_admin": "🛡️ Super admin", "admin": "👑 Admin", "user": "🙋 Utilisateur"}.get(u["role"], u["role"])
+        type_badge = {"tontine": "💰 Tontine", "cotisation": "🤝 Cotisation"}.get(u.get("type_compte"), "— non défini")
         c1, c2 = st.columns([4, 1])
         with c1:
-            st.write(f"- **{u['nom']}** ({u['telephone']}) — {role_badge}")
+            st.write(f"- **{u['nom']}** ({u['telephone']}) — {role_badge} · {type_badge}")
         with c2:
             if u["role"] in ("admin", "user"):
                 if st.button("🗑️ Supprimer", key=f"del_{u['id']}"):
