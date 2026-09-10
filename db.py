@@ -18,6 +18,8 @@ def get_client() -> Client:
 
 LIMITE_FREE_TONTINES = 1
 LIMITE_FREE_MEMBRES = 10
+LIMITE_FREE_ASSOCIATIONS = 1
+LIMITE_FREE_MEMBRES_ASSOCIATION = 10
 
 
 def get_plan_actif(admin_id):
@@ -77,6 +79,54 @@ def verifier_limite_membres(tontine_id):
         return False, (
             f"Cette tontine a atteint la limite de {LIMITE_FREE_MEMBRES} membres "
             "du plan gratuit. Contactez l'administrateur pour passer en Premium."
+        )
+    return True, None
+
+
+def verifier_limite_associations(admin_id):
+    """Vérifie si l'admin peut créer une nouvelle association.
+    Retourne (True, None) si autorisé, (False, message) sinon."""
+    plan = get_plan_actif(admin_id)
+    if plan == "premium":
+        return True, None
+
+    sb = get_client()
+    res = sb.table("associations").select("id").eq("admin_id", admin_id).execute()
+    nb_associations = len(res.data)
+
+    if nb_associations >= LIMITE_FREE_ASSOCIATIONS:
+        return False, (
+            f"Le plan gratuit est limité à {LIMITE_FREE_ASSOCIATIONS} association(s). "
+            "Passez au plan Premium pour en créer davantage."
+        )
+    return True, None
+
+
+def verifier_limite_membres_association(association_id):
+    """Vérifie si une association peut accueillir un nouveau membre,
+    selon le plan de son admin. Retourne (True, None) ou (False, message)."""
+    sb = get_client()
+    a_res = sb.table("associations").select("admin_id").eq("id", association_id).execute()
+    if not a_res.data:
+        return False, "Association introuvable."
+
+    admin_id = a_res.data[0]["admin_id"]
+    plan = get_plan_actif(admin_id)
+    if plan == "premium":
+        return True, None
+
+    membres_res = (
+        sb.table("membres_association")
+        .select("id")
+        .eq("association_id", association_id)
+        .execute()
+    )
+    nb_membres = len(membres_res.data)
+
+    if nb_membres >= LIMITE_FREE_MEMBRES_ASSOCIATION:
+        return False, (
+            f"Cette association a atteint la limite de {LIMITE_FREE_MEMBRES_ASSOCIATION} "
+            "membres du plan gratuit. Contactez l'administrateur pour passer en Premium."
         )
     return True, None
 
@@ -285,6 +335,166 @@ def activer_tontine(tontine_id):
     sb.table("tontines").update({"statut": "active", "cycle_actuel": 1}).eq("id", tontine_id).execute()
 
 
+# ---------- Associations (cotisations simples, hors tontine) ----------
+
+def create_association(nom, montant_cotisation, frequence, admin_id):
+    """Crée une association si l'admin n'a pas dépassé la limite de son
+    plan. Retourne (True, code) en cas de succès, (False, message) sinon."""
+    ok, msg = verifier_limite_associations(admin_id)
+    if not ok:
+        return False, msg
+
+    sb = get_client()
+    code = generate_code()
+    while sb.table("associations").select("id").eq("code_invitation", code).execute().data:
+        code = generate_code()
+
+    sb.table("associations").insert({
+        "nom": nom,
+        "code_invitation": code,
+        "montant_cotisation": montant_cotisation,
+        "frequence": frequence,
+        "admin_id": admin_id,
+    }).execute()
+
+    return True, code
+
+
+def join_association(code, user_id):
+    sb = get_client()
+    a_res = sb.table("associations").select("*").eq("code_invitation", code).execute()
+    if not a_res.data:
+        return False, "Code d'invitation invalide."
+    association = a_res.data[0]
+
+    already = (
+        sb.table("membres_association")
+        .select("id")
+        .eq("association_id", association["id"])
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if already.data:
+        return False, "Vous êtes déjà membre de cette association."
+
+    ok, msg = verifier_limite_membres_association(association["id"])
+    if not ok:
+        return False, msg
+
+    sb.table("membres_association").insert({
+        "association_id": association["id"],
+        "user_id": user_id,
+    }).execute()
+
+    return True, f"Vous avez rejoint l'association « {association['nom']} »."
+
+
+def get_user_associations(user_id):
+    sb = get_client()
+    membres = sb.table("membres_association").select("association_id").eq("user_id", user_id).execute()
+    association_ids = set(m["association_id"] for m in membres.data)
+
+    admin_res = sb.table("associations").select("id").eq("admin_id", user_id).execute()
+    association_ids.update(a["id"] for a in admin_res.data)
+
+    if not association_ids:
+        return []
+    res = (
+        sb.table("associations")
+        .select("*")
+        .in_("id", list(association_ids))
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return res.data
+
+
+def get_association(association_id):
+    sb = get_client()
+    res = sb.table("associations").select("*").eq("id", association_id).execute()
+    return res.data[0] if res.data else None
+
+
+def get_membres_association(association_id):
+    sb = get_client()
+    res = (
+        sb.table("membres_association")
+        .select("*, users(nom, telephone)")
+        .eq("association_id", association_id)
+        .order("created_at")
+        .execute()
+    )
+    membres = []
+    for m in res.data:
+        m2 = dict(m)
+        m2["nom"] = m["users"]["nom"]
+        m2["telephone"] = m["users"]["telephone"]
+        membres.append(m2)
+    return membres
+
+
+def declarer_cotisation_association(association_id, user_id, periode_numero, montant):
+    sb = get_client()
+    existing = (
+        sb.table("cotisations_association")
+        .select("id")
+        .eq("association_id", association_id)
+        .eq("user_id", user_id)
+        .eq("periode_numero", periode_numero)
+        .execute()
+    )
+    if existing.data:
+        sb.table("cotisations_association").update({
+            "statut": "declaree",
+            "date_declaration": datetime.now().isoformat(),
+        }).eq("id", existing.data[0]["id"]).execute()
+    else:
+        sb.table("cotisations_association").insert({
+            "association_id": association_id,
+            "user_id": user_id,
+            "periode_numero": periode_numero,
+            "montant": montant,
+            "statut": "declaree",
+            "date_declaration": datetime.now().isoformat(),
+        }).execute()
+
+
+def valider_cotisation_association(cotisation_id):
+    sb = get_client()
+    sb.table("cotisations_association").update({
+        "statut": "validee",
+        "date_validation": datetime.now().isoformat(),
+    }).eq("id", cotisation_id).execute()
+
+
+def get_cotisations_periode_association(association_id, periode_numero):
+    sb = get_client()
+    res = (
+        sb.table("cotisations_association")
+        .select("*, users(nom)")
+        .eq("association_id", association_id)
+        .eq("periode_numero", periode_numero)
+        .execute()
+    )
+    cotisations = []
+    for c in res.data:
+        c2 = dict(c)
+        c2["nom"] = c["users"]["nom"]
+        cotisations.append(c2)
+    return cotisations
+
+
+def avancer_periode_association(association_id):
+    """Passe à la période suivante. Une association n'a pas de fin —
+    les cotisations se répètent indéfiniment période après période."""
+    sb = get_client()
+    association = get_association(association_id)
+    nouvelle_periode = association["periode_actuelle"] + 1
+    sb.table("associations").update({"periode_actuelle": nouvelle_periode}).eq(
+        "id", association_id
+    ).execute()
+
+
 # ---------- Cotisations ----------
 
 def declarer_cotisation(tontine_id, user_id, cycle_numero, montant):
@@ -371,19 +581,41 @@ def reset_tontine(tontine_id):
     }).eq("id", tontine_id).execute()
 
 
+def get_all_associations():
+    sb = get_client()
+    res = sb.table("associations").select("*, users(nom)").order("created_at", desc=True).execute()
+    associations = []
+    for a in res.data:
+        a2 = dict(a)
+        a2["admin_nom"] = a["users"]["nom"] if a.get("users") else "—"
+        associations.append(a2)
+    return associations
+
+
+def reset_association(association_id):
+    """Remet une association à zéro : supprime toutes ses cotisations et
+    remet la période à 1. Les membres restent inscrits."""
+    sb = get_client()
+    sb.table("cotisations_association").delete().eq("association_id", association_id).execute()
+    sb.table("associations").update({"periode_actuelle": 1}).eq("id", association_id).execute()
+
+
 def wipe_all_data():
-    """Efface TOUTES les tontines, membres et cotisations (garde les
-    comptes utilisateurs). Irréversible."""
+    """Efface TOUTES les tontines, associations, membres et cotisations
+    (garde les comptes utilisateurs). Irréversible."""
     sb = get_client()
     sb.table("cotisations").delete().neq("id", 0).execute()
     sb.table("membres").delete().neq("id", 0).execute()
     sb.table("tontines").delete().neq("id", 0).execute()
+    sb.table("cotisations_association").delete().neq("id", 0).execute()
+    sb.table("membres_association").delete().neq("id", 0).execute()
+    sb.table("associations").delete().neq("id", 0).execute()
 
 
 def delete_admin_account(user_id):
-    """Supprime un compte admin ainsi que toutes les tontines qu'il
-    administre (et leurs membres/cotisations), plus ses propres
-    participations dans d'autres tontines."""
+    """Supprime un compte admin ainsi que toutes les tontines et
+    associations qu'il administre (et leurs membres/cotisations), plus
+    ses propres participations ailleurs."""
     sb = get_client()
 
     # Tontines administrées par ce compte : supprimer en cascade
@@ -394,9 +626,19 @@ def delete_admin_account(user_id):
         sb.table("membres").delete().in_("tontine_id", tontine_ids).execute()
         sb.table("tontines").delete().in_("id", tontine_ids).execute()
 
+    # Associations administrées par ce compte : supprimer en cascade
+    admin_associations = sb.table("associations").select("id").eq("admin_id", user_id).execute()
+    association_ids = [a["id"] for a in admin_associations.data]
+    if association_ids:
+        sb.table("cotisations_association").delete().in_("association_id", association_ids).execute()
+        sb.table("membres_association").delete().in_("association_id", association_ids).execute()
+        sb.table("associations").delete().in_("id", association_ids).execute()
+
     # Ses propres participations ailleurs (en tant qu'adhérent)
     sb.table("cotisations").delete().eq("user_id", user_id).execute()
     sb.table("membres").delete().eq("user_id", user_id).execute()
+    sb.table("cotisations_association").delete().eq("user_id", user_id).execute()
+    sb.table("membres_association").delete().eq("user_id", user_id).execute()
 
     # Abonnement associé (s'il en avait un)
     sb.table("subscriptions").delete().eq("admin_id", user_id).execute()
@@ -407,11 +649,12 @@ def delete_admin_account(user_id):
 
 def delete_user_account(user_id):
     """Supprime un compte utilisateur simple (role 'user') : ses
-    cotisations et ses participations (membres) dans les tontines
-    qu'il a rejointes, puis le compte lui-même. Ne touche à aucune
-    tontine administrée (un 'user' n'en administre jamais)."""
+    cotisations et ses participations (membres) dans les tontines et
+    associations qu'il a rejointes, puis le compte lui-même."""
     sb = get_client()
 
     sb.table("cotisations").delete().eq("user_id", user_id).execute()
     sb.table("membres").delete().eq("user_id", user_id).execute()
+    sb.table("cotisations_association").delete().eq("user_id", user_id).execute()
+    sb.table("membres_association").delete().eq("user_id", user_id).execute()
     sb.table("users").delete().eq("id", user_id).execute()
