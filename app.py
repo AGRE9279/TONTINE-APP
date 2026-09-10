@@ -94,8 +94,11 @@ def page_dashboard():
                     freq = st.selectbox("Fréquence", ["hebdomadaire", "mensuelle"])
                     submitted = st.form_submit_button("Créer")
                     if submitted and nom:
-                        tontine_id, code = db.create_tontine(nom, montant, freq, user["id"])
-                        st.success(f"Tontine créée ! Code d'invitation : **{code}**")
+                        ok, result = db.create_tontine(nom, montant, freq, user["id"])
+                        if ok:
+                            st.success(f"Tontine créée ! Code d'invitation : **{result}**")
+                        else:
+                            st.warning(result)
 
     with col2:
         with st.expander("🔑 Rejoindre une tontine"):
