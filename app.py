@@ -76,18 +76,26 @@ def page_auth():
 def page_dashboard():
     user = st.session_state.user
     st.title(f"👋 Bonjour, {user['nom']}")
+    is_admin_or_more = user["role"] in ("admin", "super_admin")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        with st.expander("➕ Créer une tontine"):
-            with st.form("create_tontine_form"):
-                nom = st.text_input("Nom de la tontine")
-                montant = st.number_input("Montant de cotisation (FCFA)", min_value=500, step=500)
-                freq = st.selectbox("Fréquence", ["hebdomadaire", "mensuelle"])
-                submitted = st.form_submit_button("Créer")
-                if submitted and nom:
-                    tontine_id, code = db.create_tontine(nom, montant, freq, user["id"])
-                    st.success(f"Tontine créée ! Code d'invitation : **{code}**")
+    if is_admin_or_more:
+        col1, col2 = st.columns(2)
+    else:
+        col1 = None
+        col2 = st.container()
+        st.caption("Seuls les administrateurs peuvent créer une tontine. Tu peux rejoindre une tontine existante avec un code.")
+
+    if is_admin_or_more:
+        with col1:
+            with st.expander("➕ Créer une tontine"):
+                with st.form("create_tontine_form"):
+                    nom = st.text_input("Nom de la tontine")
+                    montant = st.number_input("Montant de cotisation (FCFA)", min_value=500, step=500)
+                    freq = st.selectbox("Fréquence", ["hebdomadaire", "mensuelle"])
+                    submitted = st.form_submit_button("Créer")
+                    if submitted and nom:
+                        tontine_id, code = db.create_tontine(nom, montant, freq, user["id"])
+                        st.success(f"Tontine créée ! Code d'invitation : **{code}**")
 
     with col2:
         with st.expander("🔑 Rejoindre une tontine"):
@@ -223,20 +231,65 @@ def page_tontine():
 
 
 # ---------------------------------------------------------------------------
+# PANNEAU SUPER_ADMIN — création de comptes admin
+# ---------------------------------------------------------------------------
+
+def page_admin_panel():
+    st.title("🛡️ Administration")
+    st.caption("Réservé au super_admin — crée ici les comptes des administrateurs de tontines.")
+
+    if st.button("← Retour au tableau de bord"):
+        st.session_state.show_admin_panel = False
+        st.rerun()
+
+    with st.form("create_admin_form"):
+        nom = st.text_input("Nom complet de l'admin")
+        tel = st.text_input("Téléphone")
+        pwd = st.text_input("Mot de passe à lui communiquer", type="password")
+        submitted = st.form_submit_button("Créer le compte admin")
+        if submitted:
+            if not nom or not tel or not pwd:
+                st.warning("Merci de remplir tous les champs.")
+            else:
+                ok, msg = db.create_admin_account(nom, tel, pwd)
+                if ok:
+                    st.success(msg + " Communique-lui son téléphone et son mot de passe.")
+                else:
+                    st.error(msg)
+
+    st.divider()
+    st.subheader("Comptes existants")
+    users = db.get_all_users()
+    for u in users:
+        role_badge = {"super_admin": "🛡️ Super admin", "admin": "👑 Admin", "user": "🙋 Utilisateur"}.get(u["role"], u["role"])
+        st.write(f"- **{u['nom']}** ({u['telephone']}) — {role_badge}")
+
+
+# ---------------------------------------------------------------------------
 # ROUTING
 # ---------------------------------------------------------------------------
+
+if "show_admin_panel" not in st.session_state:
+    st.session_state.show_admin_panel = False
 
 if st.session_state.user is None:
     page_auth()
 else:
     with st.sidebar:
         st.write(f"Connecté : **{st.session_state.user['nom']}**")
+        if st.session_state.user["role"] == "super_admin":
+            if st.button("🛡️ Administration"):
+                st.session_state.show_admin_panel = True
+                st.rerun()
         if st.button("Déconnexion"):
             st.session_state.user = None
             st.session_state.tontine_id = None
+            st.session_state.show_admin_panel = False
             st.rerun()
 
-    if st.session_state.tontine_id is None:
+    if st.session_state.show_admin_panel:
+        page_admin_panel()
+    elif st.session_state.tontine_id is None:
         page_dashboard()
     else:
         page_tontine()
