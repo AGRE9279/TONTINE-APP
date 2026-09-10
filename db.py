@@ -14,6 +14,73 @@ def get_client() -> Client:
     return create_client(url, key)
 
 
+# ---------- Freemium / Abonnements ----------
+
+LIMITE_FREE_TONTINES = 1
+LIMITE_FREE_MEMBRES = 10
+
+
+def get_plan_actif(admin_id):
+    """Retourne le plan actif de l'admin ('free' ou 'premium').
+    Si aucun abonnement trouvé, considère 'free' par défaut."""
+    sb = get_client()
+    res = (
+        sb.table("subscriptions")
+        .select("plan")
+        .eq("admin_id", admin_id)
+        .eq("statut", "actif")
+        .order("date_debut", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if res.data:
+        return res.data[0]["plan"]
+    return "free"
+
+
+def verifier_limite_tontines(admin_id):
+    """Vérifie si l'admin peut créer une nouvelle tontine.
+    Retourne (True, None) si autorisé, (False, message) sinon."""
+    plan = get_plan_actif(admin_id)
+    if plan == "premium":
+        return True, None
+
+    sb = get_client()
+    res = sb.table("tontines").select("id").eq("admin_id", admin_id).execute()
+    nb_tontines = len(res.data)
+
+    if nb_tontines >= LIMITE_FREE_TONTINES:
+        return False, (
+            f"Le plan gratuit est limité à {LIMITE_FREE_TONTINES} tontine(s). "
+            "Passez au plan Premium pour en créer davantage."
+        )
+    return True, None
+
+
+def verifier_limite_membres(tontine_id):
+    """Vérifie si une tontine peut accueillir un nouveau membre,
+    selon le plan de son admin. Retourne (True, None) ou (False, message)."""
+    sb = get_client()
+    t_res = sb.table("tontines").select("admin_id").eq("id", tontine_id).execute()
+    if not t_res.data:
+        return False, "Tontine introuvable."
+
+    admin_id = t_res.data[0]["admin_id"]
+    plan = get_plan_actif(admin_id)
+    if plan == "premium":
+        return True, None
+
+    membres_res = sb.table("membres").select("id").eq("tontine_id", tontine_id).execute()
+    nb_membres = len(membres_res.data)
+
+    if nb_membres >= LIMITE_FREE_MEMBRES:
+        return False, (
+            f"Cette tontine a atteint la limite de {LIMITE_FREE_MEMBRES} membres "
+            "du plan gratuit. Contactez l'administrateur pour passer en Premium."
+        )
+    return True, None
+
+
 # ---------- Auth ----------
 
 def hash_password(password: str) -> str:
@@ -43,12 +110,21 @@ def create_admin_account(nom, telephone, password):
     if existing.data:
         return False, "Ce numéro de téléphone est déjà utilisé."
 
-    sb.table("users").insert({
+    res = sb.table("users").insert({
         "nom": nom,
         "telephone": telephone,
         "password_hash": hash_password(password),
         "role": "admin",
     }).execute()
+
+    # Initialise automatiquement un abonnement gratuit pour ce nouvel admin
+    new_user_id = res.data[0]["id"]
+    sb.table("subscriptions").insert({
+        "admin_id": new_user_id,
+        "plan": "free",
+        "statut": "actif",
+    }).execute()
+
     return True, "Compte admin créé avec succès."
 
 
@@ -93,6 +169,12 @@ def generate_code(length=6):
 
 
 def create_tontine(nom, montant_cotisation, frequence, admin_id):
+    """Crée une tontine si l'admin n'a pas dépassé la limite de son plan.
+    Retourne (True, code) en cas de succès, (False, message) sinon."""
+    ok, msg = verifier_limite_tontines(admin_id)
+    if not ok:
+        return False, msg
+
     sb = get_client()
     code = generate_code()
     while sb.table("tontines").select("id").eq("code_invitation", code).execute().data:
@@ -105,13 +187,12 @@ def create_tontine(nom, montant_cotisation, frequence, admin_id):
         "frequence": frequence,
         "admin_id": admin_id,
     }).execute()
-    tontine_id = res.data[0]["id"]
 
     # L'admin gère la tontine mais n'est plus ajouté automatiquement comme
     # adhérent — s'il veut aussi cotiser et recevoir un tour, il rejoint
     # avec le code comme n'importe qui d'autre.
 
-    return tontine_id, code
+    return True, code
 
 
 def join_tontine(code, user_id):
@@ -130,6 +211,10 @@ def join_tontine(code, user_id):
     )
     if already.data:
         return False, "Vous êtes déjà membre de cette tontine."
+
+    ok, msg = verifier_limite_membres(tontine["id"])
+    if not ok:
+        return False, msg
 
     membres = sb.table("membres").select("ordre_tour").eq("tontine_id", tontine["id"]).execute()
     max_ordre = max([m["ordre_tour"] for m in membres.data], default=0)
@@ -312,6 +397,9 @@ def delete_admin_account(user_id):
     # Ses propres participations ailleurs (en tant qu'adhérent)
     sb.table("cotisations").delete().eq("user_id", user_id).execute()
     sb.table("membres").delete().eq("user_id", user_id).execute()
+
+    # Abonnement associé (s'il en avait un)
+    sb.table("subscriptions").delete().eq("admin_id", user_id).execute()
 
     # Le compte lui-même
     sb.table("users").delete().eq("id", user_id).execute()
