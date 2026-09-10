@@ -403,3 +403,15 @@ def delete_admin_account(user_id):
 
     # Le compte lui-même
     sb.table("users").delete().eq("id", user_id).execute()
+
+
+def delete_user_account(user_id):
+    """Supprime un compte utilisateur simple (role 'user') : ses
+    cotisations et ses participations (membres) dans les tontines
+    qu'il a rejointes, puis le compte lui-même. Ne touche à aucune
+    tontine administrée (un 'user' n'en administre jamais)."""
+    sb = get_client()
+
+    sb.table("cotisations").delete().eq("user_id", user_id).execute()
+    sb.table("membres").delete().eq("user_id", user_id).execute()
+    sb.table("users").delete().eq("id", user_id).execute()
