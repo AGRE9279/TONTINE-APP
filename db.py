@@ -137,7 +137,7 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 
-def create_user(nom, telephone, password):
+def create_user(nom, telephone, password, type_compte):
     sb = get_client()
     existing = sb.table("users").select("id").eq("telephone", telephone).execute()
     if existing.data:
@@ -148,11 +148,12 @@ def create_user(nom, telephone, password):
         "telephone": telephone,
         "password_hash": hash_password(password),
         "role": "user",
+        "type_compte": type_compte,
     }).execute()
     return True, "Compte créé avec succès."
 
 
-def create_admin_account(nom, telephone, password):
+def create_admin_account(nom, telephone, password, type_compte):
     """Réservé au super_admin : crée directement un compte avec le rôle
     'admin', sans passer par l'auto-inscription publique."""
     sb = get_client()
@@ -165,6 +166,7 @@ def create_admin_account(nom, telephone, password):
         "telephone": telephone,
         "password_hash": hash_password(password),
         "role": "admin",
+        "type_compte": type_compte,
     }).execute()
 
     # Initialise automatiquement un abonnement gratuit pour ce nouvel admin
@@ -178,15 +180,23 @@ def create_admin_account(nom, telephone, password):
     return True, "Compte admin créé avec succès."
 
 
+def set_type_compte(user_id, type_compte):
+    """Assigne (ou modifie) le type de compte d'un utilisateur existant :
+    'tontine' ou 'cotisation'."""
+    sb = get_client()
+    sb.table("users").update({"type_compte": type_compte}).eq("id", user_id).execute()
+
+
 def get_all_users():
     sb = get_client()
     res = (
         sb.table("users")
-        .select("id, nom, telephone, role, created_at")
+        .select("id, nom, telephone, role, type_compte, created_at")
         .order("created_at", desc=True)
         .execute()
     )
     return res.data
+
 
 
 def get_all_tontines():
